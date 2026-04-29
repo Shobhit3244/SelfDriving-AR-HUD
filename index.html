@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Perception Engine</title>
+    <!-- Modern Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./styles.css">
+    <!-- Load TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <!-- Load COCO-SSD Model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Main Feed Area -->
+        <main class="feed-container">
+            <!-- Video element for webcam feed -->
+            <video id="webcam" autoplay playsinline muted></video>
+            <!-- Canvas for drawing bounding boxes (Perception Overlay) -->
+            <canvas id="overlay"></canvas>
+
+            <!-- Loading overlay -->
+            <div id="loading-overlay" class="loading-overlay">
+                <div class="spinner"></div>
+                <h2 id="loading-text">Initializing Perception Engine...</h2>
+            </div>
+        </main>
+
+        <!-- Glassmorphic AR Dashboard -->
+        <aside class="dashboard">
+            <header>
+                <h1>Perception Engine</h1>
+                <p class="subtitle">Self-Driving CV Module</p>
+                <div class="status-indicator">
+                    <span class="dot" id="system-status-dot"></span>
+                    <span id="system-status-text">System Offline</span>
+                </div>
+            </header>
+
+            <section class="controls">
+                <button id="start-btn" class="primary-btn">Initialize Camera</button>
+            </section>
+
+            <section class="telemetry">
+                <h3>Telemetry</h3>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <span class="label">FPS</span>
+                        <span class="value font-mono" id="fps-value">0</span>
+                    </div>
+                    <div class="metric-card">
+                        <span class="label">Inference</span>
+                        <span class="value font-mono" id="inference-value">0ms</span>
+                    </div>
+                    <div class="metric-card">
+                        <span class="label">Resolution</span>
+                        <span class="value font-mono" id="resolution-value">--</span>
+                    </div>
+                    <div class="metric-card">
+                        <span class="label">Detections</span>
+                        <span class="value font-mono" id="detection-count">0</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="log-panel">
+                <h3>Object Detection Log</h3>
+                <div class="log-container" id="detection-log">
+                    <div class="log-item default">Waiting for objects...</div>
+                </div>
+            </section>
+
+            <footer>
+                <p>Digital Image Processing & CV Project</p>
+                <p>Powered by TensorFlow.js (COCO-SSD)</p>
+            </footer>
+        </aside>
+    </div>
+    
+    <script src="./script.js"></script>
+</body>
+</html>
