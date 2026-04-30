@@ -146,7 +146,6 @@ function renderPredictions(predictions) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Calculate scale factors because video resolution might differ from canvas size
-    // Note: CSS scaleX(-1) mirrors the video visually, so we must mirror the X coordinates
     const scaleX = canvas.width / video.videoWidth;
     const scaleY = canvas.height / video.videoHeight;
 
@@ -160,8 +159,7 @@ function renderPredictions(predictions) {
         const scaledX = origX * scaleX;
         const scaledY = origY * scaleY;
 
-        // Apply mirroring calculation for X axis
-        const x = canvas.width - scaledX - scaledWidth;
+        const x = scaledX;
         const y = scaledY;
         const width = scaledWidth;
         const height = scaledHeight;
