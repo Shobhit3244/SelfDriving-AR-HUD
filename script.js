@@ -3,6 +3,7 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('start-btn');
+const shareBtn = document.getElementById('share-screen-btn');
 const loadingOverlay = document.getElementById('loading-overlay');
 const loadingText = document.getElementById('loading-text');
 
@@ -14,16 +15,22 @@ const inferenceValue = document.getElementById('inference-value');
 const resolutionValue = document.getElementById('resolution-value');
 const detectionCount = document.getElementById('detection-count');
 const detectionLog = document.getElementById('detection-log');
+const toggleObjects = document.getElementById('toggle-objects');
+const toggleLanes = document.getElementById('toggle-lanes');
 
 // State
 let model = null;
 let isDetecting = false;
-let lastFrameTime = performance.now();
+let currentPredictions = [];
+let currentLanePolygon = null;
+let currentNoGoZones = [];
+let mlInferencing = false;
+let dipInferencing = false;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 
 // Targets to detect
-const TARGET_CLASSES = ['car', 'stop sign'];
+const TARGET_CLASSES = ['car', 'person', 'bicycle', 'motorcycle', 'truck', 'bus', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'bear', 'zebra', 'giraffe', 'stop sign'];
 const MAX_LOG_ITEMS = 15;
 
 // Initialization
@@ -39,10 +46,12 @@ async function init() {
         console.log("Model loaded successfully.");
         
         startBtn.disabled = false;
+        shareBtn.disabled = false;
         startBtn.textContent = "Initialize Camera";
         loadingOverlay.classList.add('hidden');
         
         startBtn.addEventListener('click', toggleCamera);
+        shareBtn.addEventListener('click', toggleScreenShare);
     } catch (error) {
         console.error("Error loading model:", error);
         loadingText.textContent = "Error Loading Perception Model.";
@@ -51,99 +60,213 @@ async function init() {
     }
 }
 
-// Camera Control
-async function toggleCamera() {
-    if (!isDetecting) {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
+// Media Control
+function stopStream() {
+    const stream = video.srcObject;
+    if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+    }
+    video.srcObject = null;
+    isDetecting = false;
+    
+    startBtn.textContent = "Initialize Camera";
+    shareBtn.textContent = "Share Screen";
+    startBtn.style.background = "";
+    shareBtn.style.background = "";
+    shareBtn.style.borderColor = "";
+    startBtn.disabled = false;
+    shareBtn.disabled = false;
+    
+    sysStatusDot.classList.remove('active');
+    sysStatusText.textContent = "System Offline";
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    fpsValue.textContent = "0";
+    inferenceValue.textContent = "0ms";
+    detectionCount.textContent = "0";
+    resolutionValue.textContent = "--";
+}
+
+async function startMediaStream(useScreenShare = false) {
+    if (isDetecting) {
+        stopStream();
+        return;
+    }
+    try {
+        let stream;
+        if (useScreenShare) {
+            stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            shareBtn.textContent = "Stop Screen Share";
+            shareBtn.style.background = "rgba(239, 68, 68, 0.2)";
+            shareBtn.style.borderColor = "var(--danger)";
+            startBtn.disabled = true;
+        } else {
+            stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
             });
-            video.srcObject = stream;
-            
-            video.addEventListener('loadeddata', () => {
-                // Set canvas dimensions to match video
-                canvas.width = video.clientWidth;
-                canvas.height = video.clientHeight;
-                resolutionValue.textContent = `${video.videoWidth}x${video.videoHeight}`;
-                
-                isDetecting = true;
-                startBtn.textContent = "Stop Camera";
-                startBtn.style.background = "linear-gradient(135deg, var(--danger), #b91c1c)";
-                
-                sysStatusDot.classList.add('active');
-                sysStatusText.textContent = "System Online";
-                
-                // Clear wait log
-                detectionLog.innerHTML = '';
-                
-                // Start detection loop
-                detectFrame();
-            });
-            
-        } catch (error) {
-            console.error("Error accessing webcam:", error);
-            alert("Could not access the webcam. Ensure you are on localhost or HTTPS.");
+            startBtn.textContent = "Stop Camera";
+            startBtn.style.background = "linear-gradient(135deg, var(--danger), #b91c1c)";
+            shareBtn.disabled = true;
         }
-    } else {
-        // Stop Camera
-        const stream = video.srcObject;
-        if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-        }
-        video.srcObject = null;
-        isDetecting = false;
         
-        startBtn.textContent = "Initialize Camera";
-        startBtn.style.background = "";
-        sysStatusDot.classList.remove('active');
-        sysStatusText.textContent = "System Offline";
+        video.srcObject = stream;
         
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        fpsValue.textContent = "0";
-        inferenceValue.textContent = "0ms";
-        detectionCount.textContent = "0";
-        resolutionValue.textContent = "--";
+        video.addEventListener('loadeddata', () => {
+            canvas.width = video.clientWidth;
+            canvas.height = video.clientHeight;
+            resolutionValue.textContent = `${video.videoWidth}x${video.videoHeight}`;
+            
+            isDetecting = true;
+            sysStatusDot.classList.add('active');
+            sysStatusText.textContent = "System Online";
+            
+            detectionLog.innerHTML = '';
+            startDetectionLoops();
+        }, { once: true });
+        
+        stream.getVideoTracks()[0].addEventListener('ended', stopStream);
+        
+    } catch (error) {
+        console.error("Error accessing media:", error);
+        alert("Could not access the media. Please check permissions.");
     }
 }
 
-// Main Detection Loop
-async function detectFrame() {
+function toggleCamera() { startMediaStream(false); }
+function toggleScreenShare() { startMediaStream(true); }
+
+// Main Detection Loops
+function startDetectionLoops() {
+    requestAnimationFrame(drawLoop);
+    mlLoop();
+    dipLoop();
+}
+
+async function mlLoop() {
     if (!isDetecting || !model) return;
-
-    // Ensure canvas dimensions match video display size in case of resize
-    if (canvas.width !== video.clientWidth || canvas.height !== video.clientHeight) {
-        canvas.width = video.clientWidth;
-        canvas.height = video.clientHeight;
+    
+    if (!mlInferencing) {
+        mlInferencing = true;
+        const startInferenceTime = performance.now();
+        try {
+            const predictions = await model.detect(video);
+            const infTime = Math.round(performance.now() - startInferenceTime);
+            currentPredictions = predictions.filter(p => TARGET_CLASSES.includes(p.class));
+            updateMetrics(infTime, currentPredictions.length);
+            updateLogs(currentPredictions);
+        } catch (e) {
+            console.error("ML Error:", e);
+        }
+        mlInferencing = false;
     }
+    setTimeout(mlLoop, 42); // Throttle to ~24 fps
+}
 
-    const startInferenceTime = performance.now();
+function dipLoop() {
+    if (!isDetecting) return;
     
-    // Perform detection
-    const predictions = await model.detect(video);
-    
-    const endInferenceTime = performance.now();
-    const infTime = Math.round(endInferenceTime - startInferenceTime);
-    
-    // Filter predictions for our targets
-    const filteredPredictions = predictions.filter(p => TARGET_CLASSES.includes(p.class));
-    
-    // Render AR elements
-    renderPredictions(filteredPredictions);
-    
-    // Update Metrics
-    updateMetrics(infTime, filteredPredictions.length);
-    updateLogs(filteredPredictions);
-    
-    // Calculate FPS
-    calculateFPS();
+    if (!dipInferencing) {
+        dipInferencing = true;
+        processDIP();
+        dipInferencing = false;
+    }
+    setTimeout(dipLoop, 42); // Throttle to ~24 fps
+}
 
-    // Loop
-    requestAnimationFrame(detectFrame);
+function drawLoop() {
+    if (!isDetecting) return;
+
+    try {
+        if (!video || video.videoWidth === 0 || video.videoHeight === 0 || video.clientWidth === 0) {
+            requestAnimationFrame(drawLoop);
+            return;
+        }
+
+        if (canvas.width !== video.clientWidth || canvas.height !== video.clientHeight) {
+            canvas.width = video.clientWidth;
+            canvas.height = video.clientHeight;
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        if (!toggleObjects || toggleObjects.checked) {
+            renderPredictions(currentPredictions);
+        }
+        
+        if (!toggleLanes || toggleLanes.checked) {
+            // Draw DIP Lane Polygon
+            if (currentLanePolygon && currentLanePolygon.length === 4) {
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.2)'; // Translucent emerald
+            ctx.beginPath();
+            ctx.moveTo(currentLanePolygon[0].x, currentLanePolygon[0].y);
+            for (let i = 1; i < currentLanePolygon.length; i++) {
+                ctx.lineTo(currentLanePolygon[i].x, currentLanePolygon[i].y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            
+            // Draw lane boundary lines
+            ctx.strokeStyle = 'rgba(16, 185, 129, 0.8)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(currentLanePolygon[0].x, currentLanePolygon[0].y);
+            ctx.lineTo(currentLanePolygon[1].x, currentLanePolygon[1].y);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(currentLanePolygon[2].x, currentLanePolygon[2].y);
+            ctx.lineTo(currentLanePolygon[3].x, currentLanePolygon[3].y);
+            ctx.stroke();
+        }
+        
+        // Draw No-Go Zones (Non-drivable areas outside the main lane)
+        if (currentNoGoZones && currentNoGoZones.length > 0) {
+            for (let poly of currentNoGoZones) {
+                if (!poly || poly.length < 3) continue;
+                
+                ctx.fillStyle = 'rgba(239, 68, 68, 0.15)'; // Translucent Red
+                ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+                ctx.lineWidth = 2;
+                
+                ctx.beginPath();
+                ctx.moveTo(poly[0].x, poly[0].y);
+                for (let i = 1; i < poly.length; i++) {
+                    ctx.lineTo(poly[i].x, poly[i].y);
+                }
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                
+                // Add text label roughly in the center-top of the zone
+                let minX = Math.min(...poly.map(p => p.x));
+                let maxX = Math.max(...poly.map(p => p.x));
+                let minY = Math.min(...poly.map(p => p.y));
+                let avgX = (minX + maxX) / 2;
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '14px "JetBrains Mono", monospace';
+                ctx.fillText("NO-GO ZONE", avgX - 40, minY + 30);
+            }
+        }
+        } // End of toggleLanes check
+
+        calculateFPS();
+    } catch (err) {
+        console.error("Rendering Error: ", err);
+        const fpsElement = document.getElementById('fps-value');
+        if (fpsElement) {
+            // Display the actual error message in the UI so it can be debugged
+            fpsElement.textContent = String(err.message || err).substring(0, 15);
+            fpsElement.style.fontSize = "12px";
+            fpsElement.style.color = "#ff4444";
+        }
+    } finally {
+        requestAnimationFrame(drawLoop);
+    }
 }
 
 // Render bounding boxes and AR HUD
 function renderPredictions(predictions) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Calculate scale factors because video resolution might differ from canvas size
     const scaleX = canvas.width / video.videoWidth;
@@ -164,9 +287,20 @@ function renderPredictions(predictions) {
         const width = scaledWidth;
         const height = scaledHeight;
 
-        const isCar = prediction.class === 'car';
-        const color = isCar ? '#0ea5e9' : '#ef4444'; // CSS Variables equivalent
-        const bgOpacity = isCar ? 'rgba(14, 165, 233, 0.15)' : 'rgba(239, 68, 68, 0.15)';
+        const CLASS_COLORS = {
+            'car': { color: '#0ea5e9', bgOpacity: 'rgba(14, 165, 233, 0.15)' }, // Blue
+            'person': { color: '#f59e0b', bgOpacity: 'rgba(245, 158, 11, 0.15)' }, // Amber
+            'bicycle': { color: '#8b5cf6', bgOpacity: 'rgba(139, 92, 246, 0.15)' }, // Purple
+            'motorcycle': { color: '#ec4899', bgOpacity: 'rgba(236, 72, 153, 0.15)' }, // Pink
+            'truck': { color: '#14b8a6', bgOpacity: 'rgba(20, 184, 166, 0.15)' }, // Teal
+            'bus': { color: '#eab308', bgOpacity: 'rgba(234, 179, 8, 0.15)' }, // Yellow
+            'stop sign': { color: '#ef4444', bgOpacity: 'rgba(239, 68, 68, 0.15)' }, // Red
+            'default': { color: '#10b981', bgOpacity: 'rgba(16, 185, 129, 0.15)' } // Emerald
+        };
+
+        const theme = CLASS_COLORS[prediction.class] || CLASS_COLORS['default'];
+        const color = theme.color;
+        const bgOpacity = theme.bgOpacity;
         
         // Draw Fill
         ctx.fillStyle = bgOpacity;
@@ -279,3 +413,177 @@ function updateLogs(predictions) {
 
 // Start app
 window.addEventListener('load', init);
+
+// OpenCV DIP Processing
+let srcMat, dstMat, edgesMat, linesMat, hsvMat, mask1, mask2, redMask, contours, hierarchy;
+let hiddenCanvas, hiddenCtx;
+
+function processDIP() {
+    if (typeof cv === 'undefined' || !cv.Mat) return;
+    if (video.videoWidth === 0 || video.videoHeight === 0) return;
+    
+    try {
+        if (!hiddenCanvas) {
+            hiddenCanvas = document.createElement('canvas');
+            hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        
+        const MAX_DIP_WIDTH = 640;
+        let procWidth = video.videoWidth;
+        let procHeight = video.videoHeight;
+        
+        if (procWidth > MAX_DIP_WIDTH) {
+            procHeight = Math.floor(procHeight * (MAX_DIP_WIDTH / procWidth));
+            procWidth = MAX_DIP_WIDTH;
+        }
+
+        // Ensure size match if resolution changes
+        if (hiddenCanvas.width !== procWidth || hiddenCanvas.height !== procHeight) {
+            hiddenCanvas.width = procWidth;
+            hiddenCanvas.height = procHeight;
+            if (srcMat) {
+                srcMat.delete(); dstMat.delete(); edgesMat.delete(); linesMat.delete();
+                hsvMat.delete(); mask1.delete(); mask2.delete(); redMask.delete();
+                contours.delete(); hierarchy.delete();
+                srcMat = null;
+            }
+        }
+
+        // Reliable way to capture video frame into OpenCV
+        hiddenCtx.drawImage(video, 0, 0, procWidth, procHeight);
+        let imageData = hiddenCtx.getImageData(0, 0, procWidth, procHeight);
+
+        if (!srcMat) {
+            srcMat = cv.matFromImageData(imageData);
+            dstMat = new cv.Mat(procHeight, procWidth, cv.CV_8UC1);
+            edgesMat = new cv.Mat(procHeight, procWidth, cv.CV_8UC1);
+            linesMat = new cv.Mat();
+            hsvMat = new cv.Mat(procHeight, procWidth, cv.CV_8UC3);
+            mask1 = new cv.Mat(procHeight, procWidth, cv.CV_8UC1);
+            mask2 = new cv.Mat(procHeight, procWidth, cv.CV_8UC1);
+            redMask = new cv.Mat(procHeight, procWidth, cv.CV_8UC1);
+            contours = new cv.MatVector();
+            hierarchy = new cv.Mat();
+        } else {
+            srcMat.data.set(imageData.data);
+        }
+        
+        const scaleX = canvas.width / procWidth;
+        const scaleY = canvas.height / procHeight;
+
+        // ==========================================
+        // 1. Lane Detection (Green Lines)
+        // ==========================================
+        cv.cvtColor(srcMat, dstMat, cv.COLOR_RGBA2GRAY);
+        let ksize = new cv.Size(5, 5);
+        cv.GaussianBlur(dstMat, dstMat, ksize, 0, 0, cv.BORDER_DEFAULT);
+        cv.Canny(dstMat, edgesMat, 50, 150, 3);
+        
+        let mask = cv.Mat.zeros(edgesMat.rows, edgesMat.cols, cv.CV_8UC1);
+        let pts = new cv.Mat(4, 1, cv.CV_32SC2);
+        pts.data32S.set([
+            0, procHeight,
+            Math.floor(procWidth * 0.3), Math.floor(procHeight * 0.5),
+            Math.floor(procWidth * 0.7), Math.floor(procHeight * 0.5),
+            procWidth, procHeight
+        ]);
+        let ptsVec = new cv.MatVector();
+        ptsVec.push_back(pts);
+        cv.fillPoly(mask, ptsVec, new cv.Scalar(255));
+        
+        let maskedEdges = new cv.Mat();
+        cv.bitwise_and(edgesMat, mask, maskedEdges);
+        
+        cv.HoughLinesP(maskedEdges, linesMat, 1, Math.PI / 180, 50, 50, 10);
+        
+        mask.delete(); pts.delete(); ptsVec.delete(); maskedEdges.delete();
+        
+        let leftLines = [];
+        let rightLines = [];
+        
+        for (let i = 0; i < linesMat.rows; ++i) {
+            let x1 = linesMat.data32S[i * 4];
+            let y1 = linesMat.data32S[i * 4 + 1];
+            let x2 = linesMat.data32S[i * 4 + 2];
+            let y2 = linesMat.data32S[i * 4 + 3];
+            
+            let dX = x2 - x1;
+            if (dX === 0) continue; // Ignore vertical lines
+            
+            let slope = (y2 - y1) / dX;
+            // Filter extreme horizontal or vertical slopes
+            if (Math.abs(slope) < 0.2 || Math.abs(slope) > 10) continue;
+            
+            // Left lane usually has negative slope, right lane has positive slope
+            if (slope < -0.2 && x1 < procWidth * 0.7 && x2 < procWidth * 0.7) {
+                leftLines.push([x1, y1, x2, y2]);
+            } else if (slope > 0.2 && x1 > procWidth * 0.3 && x2 > procWidth * 0.3) {
+                rightLines.push([x1, y1, x2, y2]);
+            }
+        }
+
+        function averageLines(lines) {
+            if (lines.length === 0) return null;
+            let sumX = 0, sumY = 0, sumSlope = 0;
+            for (let line of lines) {
+                sumX += line[0] + line[2];
+                sumY += line[1] + line[3];
+                let lineDx = line[2] - line[0];
+                if (lineDx === 0) lineDx = 0.001; // Avoid divide by zero
+                sumSlope += (line[3] - line[1]) / lineDx;
+            }
+            let avgX = sumX / (lines.length * 2);
+            let avgY = sumY / (lines.length * 2);
+            let avgSlope = sumSlope / lines.length;
+            if (Math.abs(avgSlope) < 0.001) avgSlope = avgSlope < 0 ? -0.001 : 0.001; // Avoid divide by zero later
+            return { slope: avgSlope, b: avgY - avgSlope * avgX };
+        }
+
+        let leftLane = averageLines(leftLines);
+        let rightLane = averageLines(rightLines);
+        
+        if (leftLane && rightLane) {
+            let yBottom = procHeight;
+            let yTop = procHeight * 0.55; // Horizon estimate
+            
+            let xLb = (yBottom - leftLane.b) / leftLane.slope;
+            let xLt = (yTop - leftLane.b) / leftLane.slope;
+            
+            let xRb = (yBottom - rightLane.b) / rightLane.slope;
+            let xRt = (yTop - rightLane.b) / rightLane.slope;
+            
+            // Anti-crossover protection
+            if (xLt < xRt && xLb < xRb) {
+                currentLanePolygon = [
+                    {x: xLb * scaleX, y: yBottom * scaleY},
+                    {x: xLt * scaleX, y: yTop * scaleY},
+                    {x: xRt * scaleX, y: yTop * scaleY},
+                    {x: xRb * scaleX, y: yBottom * scaleY}
+                ];
+                
+                // Dynamically assign areas outside the lane as No-Go Zones
+                currentNoGoZones = [
+                    [ // Left No-Go Zone
+                        {x: 0, y: yBottom * scaleY},
+                        {x: 0, y: yTop * scaleY},
+                        {x: xLt * scaleX, y: yTop * scaleY},
+                        {x: xLb * scaleX, y: yBottom * scaleY}
+                    ],
+                    [ // Right No-Go Zone
+                        {x: xRb * scaleX, y: yBottom * scaleY},
+                        {x: xRt * scaleX, y: yTop * scaleY},
+                        {x: procWidth * scaleX, y: yTop * scaleY},
+                        {x: procWidth * scaleX, y: yBottom * scaleY}
+                    ]
+                ];
+            } else {
+                // User requested lanes to be visible at all times.
+                // Do not clear the polygons; persist the previous valid frame's lanes.
+            }
+        } else {
+            // Persist the previous valid frame's lanes.
+        }
+    } catch (e) {
+        console.error("OpenCV processing error:", e);
+    }
+}

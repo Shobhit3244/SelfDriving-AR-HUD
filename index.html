@@ -11,6 +11,8 @@
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <!-- Load COCO-SSD Model -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <!-- Load OpenCV.js for DIP -->
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" type="text/javascript"></script>
 </head>
 <body>
     <div class="app-container">
@@ -41,6 +43,17 @@
 
             <section class="controls">
                 <button id="start-btn" class="primary-btn">Initialize Camera</button>
+                <button id="share-screen-btn" class="secondary-btn" style="margin-top: 10px;">Share Screen</button>
+                <div class="toggles" style="margin-top: 20px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                    <label style="display: flex; align-items: center; cursor: pointer; color: #e2e8f0; font-size: 14px;">
+                        <input type="checkbox" id="toggle-objects" checked style="margin-right: 10px; width: 16px; height: 16px; accent-color: #0ea5e9;">
+                        Show Detected Objects
+                    </label>
+                    <label style="display: flex; align-items: center; cursor: pointer; color: #e2e8f0; font-size: 14px;">
+                        <input type="checkbox" id="toggle-lanes" checked style="margin-right: 10px; width: 16px; height: 16px; accent-color: #10b981;">
+                        Show Lanes & No-Go Zones
+                    </label>
+                </div>
             </section>
 
             <section class="telemetry">

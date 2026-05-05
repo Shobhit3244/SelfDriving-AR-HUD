@@ -226,6 +226,30 @@ header h1 {
     transform: none;
 }
 
+.secondary-btn {
+    width: 100%;
+    padding: 12px 20px;
+    background: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--accent-primary);
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.secondary-btn:hover {
+    background: rgba(6, 182, 212, 0.1);
+}
+
+.secondary-btn:disabled {
+    border-color: #334155;
+    color: #94a3b8;
+    cursor: not-allowed;
+    background: transparent;
+}
+
 /* Telemetry Section */
 h3 {
     font-size: 0.9rem;
