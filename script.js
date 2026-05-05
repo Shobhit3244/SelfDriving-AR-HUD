@@ -28,9 +28,12 @@ let mlInferencing = false;
 let dipInferencing = false;
 let frameCount = 0;
 let lastFpsTime = performance.now();
+let trafficState = 'IDLE';
+let lastGoFlashTime = 0;
+let stopDebounceTime = 0;
 
 // Targets to detect
-const TARGET_CLASSES = ['car', 'person', 'bicycle', 'motorcycle', 'truck', 'bus', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'bear', 'zebra', 'giraffe', 'stop sign'];
+const TARGET_CLASSES = ['car', 'person', 'bicycle', 'motorcycle', 'truck', 'bus', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'bear', 'zebra', 'giraffe', 'stop sign', 'traffic light'];
 const MAX_LOG_ITEMS = 15;
 
 // Initialization
@@ -152,6 +155,37 @@ async function mlLoop() {
             const predictions = await model.detect(video);
             const infTime = Math.round(performance.now() - startInferenceTime);
             currentPredictions = predictions.filter(p => TARGET_CLASSES.includes(p.class));
+            
+            let stopDetected = false;
+            for (let p of currentPredictions) {
+                if (p.class === 'stop sign') {
+                    stopDetected = true;
+                    break;
+                }
+                if (p.class === 'traffic light') {
+                    if (isTrafficLightRed(p.bbox)) {
+                        stopDetected = true;
+                        break;
+                    }
+                }
+                if (p.class === 'car' || p.class === 'truck') {
+                    if (isCarBrakingAndClose(p.bbox)) {
+                        stopDetected = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (stopDetected) {
+                trafficState = 'STOPPING';
+                stopDebounceTime = performance.now();
+            } else if (trafficState === 'STOPPING') {
+                if (performance.now() - stopDebounceTime > 1000) { // 1 second debounce
+                    trafficState = 'GOING';
+                    lastGoFlashTime = performance.now();
+                }
+            }
+            
             updateMetrics(infTime, currentPredictions.length);
             updateLogs(currentPredictions);
         } catch (e) {
@@ -250,6 +284,24 @@ function drawLoop() {
         }
         } // End of toggleLanes check
 
+        // Draw Traffic Sign Flashes
+        const now = performance.now();
+        if (trafficState === 'STOPPING') {
+            if (Math.floor(now / 500) % 2 === 0) {
+                drawCenterFlash("STOP", "rgba(239, 68, 68, 0.9)");
+            }
+        } else if (trafficState === 'GOING') {
+            let timeInGo = now - lastGoFlashTime;
+            let cycle = Math.floor(timeInGo / 500);
+            if (cycle < 6) { // 3 full flashes (on/off)
+                if (cycle % 2 === 0) {
+                    drawCenterFlash("GO", "rgba(16, 185, 129, 0.9)");
+                }
+            } else {
+                trafficState = 'IDLE';
+            }
+        }
+
         calculateFPS();
     } catch (err) {
         console.error("Rendering Error: ", err);
@@ -295,6 +347,7 @@ function renderPredictions(predictions) {
             'truck': { color: '#14b8a6', bgOpacity: 'rgba(20, 184, 166, 0.15)' }, // Teal
             'bus': { color: '#eab308', bgOpacity: 'rgba(234, 179, 8, 0.15)' }, // Yellow
             'stop sign': { color: '#ef4444', bgOpacity: 'rgba(239, 68, 68, 0.15)' }, // Red
+            'traffic light': { color: '#f59e0b', bgOpacity: 'rgba(245, 158, 11, 0.15)' }, // Amber
             'default': { color: '#10b981', bgOpacity: 'rgba(16, 185, 129, 0.15)' } // Emerald
         };
 
@@ -586,4 +639,106 @@ function processDIP() {
     } catch (e) {
         console.error("OpenCV processing error:", e);
     }
+}
+
+// Helpers for Traffic Signs
+function isTrafficLightRed(bbox) {
+    if (typeof hiddenCtx === 'undefined' || !hiddenCtx || !hiddenCanvas) return false;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return false;
+    
+    const [x, y, w, h] = bbox;
+    const scaleX = hiddenCanvas.width / video.videoWidth;
+    const scaleY = hiddenCanvas.height / video.videoHeight;
+    
+    const sx = Math.max(0, Math.floor(x * scaleX));
+    const sy = Math.max(0, Math.floor(y * scaleY));
+    const sw = Math.min(hiddenCanvas.width - sx, Math.floor(w * scaleX));
+    const sh = Math.min(hiddenCanvas.height - sy, Math.floor(h * scaleY));
+    
+    if (sw <= 0 || sh <= 0) return false;
+    
+    const imgData = hiddenCtx.getImageData(sx, sy, sw, sh);
+    const data = imgData.data;
+    let redPixels = 0;
+    let totalPixels = sw * sh;
+    
+    // Strict check for dominant red to avoid amber/glare
+    for (let i = 0; i < data.length; i += 4) {
+        let r = data[i];
+        let g = data[i+1];
+        let b = data[i+2];
+        if (r > 180 && r > g * 2.0 && r > b * 2.0) {
+            redPixels++;
+        }
+    }
+    
+    return (redPixels / totalPixels) > 0.05; // 5% of pixels are red
+}
+
+function isCarBrakingAndClose(bbox) {
+    if (typeof hiddenCtx === 'undefined' || !hiddenCtx || !hiddenCanvas) return false;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return false;
+    
+    const [x, y, w, h] = bbox;
+    
+    // 1. Proximity Check (car must take up >20% of screen width)
+    if (w < video.videoWidth * 0.20) return false;
+    
+    // 2. Lane Position Check (car center must be in center 40% of screen)
+    const centerX = x + (w / 2);
+    if (centerX < video.videoWidth * 0.3 || centerX > video.videoWidth * 0.7) return false;
+    
+    // 3. Brake Light DIP Check (sample the bottom 30% of the bounding box)
+    const scaleX = hiddenCanvas.width / video.videoWidth;
+    const scaleY = hiddenCanvas.height / video.videoHeight;
+    
+    const bottomY = y + (h * 0.7);
+    const bottomH = h * 0.3;
+    
+    const sx = Math.max(0, Math.floor(x * scaleX));
+    const sy = Math.max(0, Math.floor(bottomY * scaleY));
+    const sw = Math.min(hiddenCanvas.width - sx, Math.floor(w * scaleX));
+    const sh = Math.min(hiddenCanvas.height - sy, Math.floor(bottomH * scaleY));
+    
+    if (sw <= 0 || sh <= 0) return false;
+    
+    const imgData = hiddenCtx.getImageData(sx, sy, sw, sh);
+    const data = imgData.data;
+    let redPixels = 0;
+    let totalPixels = sw * sh;
+    
+    // Strict red threshold for brake lights
+    for (let i = 0; i < data.length; i += 4) {
+        let r = data[i];
+        let g = data[i+1];
+        let b = data[i+2];
+        if (r > 180 && r > g * 2.0 && r > b * 2.0) {
+            redPixels++;
+        }
+    }
+    
+    // If >2% of the bottom area is intensely red, it is braking
+    return (redPixels / totalPixels) > 0.02;
+}
+
+function drawCenterFlash(text, color) {
+    ctx.save();
+    let boxWidth = canvas.width * 0.2; // 20% of the page
+    let boxHeight = boxWidth * 0.4;
+    let x = (canvas.width - boxWidth) / 2;
+    let y = (canvas.height - boxHeight) / 2;
+    
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, boxWidth, boxHeight);
+    
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x, y, boxWidth, boxHeight);
+    
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${Math.floor(boxHeight * 0.5)}px "JetBrains Mono", monospace`;
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    ctx.restore();
 }
