@@ -38,10 +38,10 @@ We identified the following critical operational sequence, managed through three
 **Phase 4: Digital Image Processing (`dipLoop`)**
 1. Downscales the video feed to 640px to optimize performance.
 2. Converts to Grayscale and applies a 5x5 Gaussian Blur.
-3. Applies Canny Edge Detection (thresholds 50, 150).
-4. Masks the upper half of the screen using an ROI polygon.
-5. Uses Hough Line Transform to extract line segments, filtering them geometrically to find the left and right lane boundaries.
-6. Calculates the Drivable Lane polygon and No-Go Zone polygons.
+3. Applies Canny Edge Detection (thresholds 30, 100).
+4. Masks the upper half of the screen using a Dynamic ROI polygon that adapts to the calculated vanishing point.
+5. Uses Hough Line Transform to extract line segments, grouping them into 'Near' and 'Far' depth bands.
+6. Calculates the Drivable Lane polygon as a Dynamic Hexagon to visualize road curvature, enforcing strict non-overlapping geometry.
 
 ## 3. Creativity Aspects & Algorithmic Decisions
 
@@ -53,6 +53,12 @@ Instead of relying entirely on heavy ML models (which struggle in browsers), we 
 
 **3. Strict Chromaticity Heuristics for Braking**
 Instead of training a specific ML model for brake lights, we developed a highly robust mathematical heuristic. When a car is detected, the system isolates the bottom 30% of its bounding box and evaluates pixels: `if (R > 180 && R > G * 2.0 && R > B * 2.0)`. This accurately identifies braking vehicles with minimal processing power.
+
+**4. Dynamic Hexagons for Curved Lanes**
+To visualize curves without the severe computational cost of polynomial curve fitting, the algorithm groups lane lines into "Near" and "Far" depth bands. Calculating the intersections between these bands yields a 6-point polygon (Hexagon) that smoothly bends with the road.
+
+**5. Dynamic Vanishing Point & Horizon Adaptation**
+The system mathematically calculates the true vanishing point by finding the intersection of the far lane lines. This coordinate is smoothed via an Exponential Moving Average (EMA) and used to dynamically adjust the ROI mask, allowing the HUD to seamlessly adapt to hills, bumps, and varying camera tilt angles.
 
 ## 4. Project Deliverables: Virtual System with HUD Integration
 
@@ -66,14 +72,15 @@ Instead of training a specific ML model for brake lights, we developed a highly 
 **Output Variables (AR Visualizations):**
 | Visual Component | Function |
 | :--- | :--- |
-| Drivable Path Polygon | Highlights the safe driving area based on lane detection |
+| Drivable Path Polygon | Highlights the safe driving area (Dynamic Hexagon) |
 | Red/Amber/Cyan Bounding Boxes | Visualizes semantic classes (e.g. Threat, Pedestrian, Vehicle) |
 | Status Overlay Text | Displays STOP/GO and FCW alerts |
+| Debug View Toggles | Visualizes real-time OpenCV DIP transformations (Grayscale, Canny, ROI Mask) |
 
 ### 4.1 DIP Algorithm Implementation Details
 
 **Lane Detection Logic Explanation:**
-The system calculates the exact intersection coordinates at the bottom of the screen ($y_{bottom}$) and the horizon ($y_{top}$) using the averaged line equations ($x = \frac{y - b}{m}$). This yields a 4-point polygon representing the Drivable Lane, while inverted calculations define the No-Go Zones.
+The system uses mathematical intersections of the "Near" and "Far" line segments to construct a 6-point lane polygon. The top boundary dynamically tapers to 5% below the continuously tracked vanishing point. Strict anti-crossover logic mathematically prevents the left and right lane boundaries from ever overlapping. If lane data is lost, the system relies on an EMA cache, clearing it if no lines are detected for >15 frames to prevent screen freezing.
 
 ### 4.2 Process Flow & State Machine Behaviour
 **Flow Logic for Forward Collision Warning:**

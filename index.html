@@ -53,6 +53,25 @@
                         <input type="checkbox" id="toggle-lanes" checked style="margin-right: 10px; width: 16px; height: 16px; accent-color: #10b981;">
                         Show Lanes & No-Go Zones
                     </label>
+                    
+                    <div style="margin-top: 15px; display: flex; flex-direction: column; gap: 8px;">
+                        <span style="color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">DIP Transformations</span>
+                        <label style="display: flex; align-items: center; cursor: pointer; color: #e2e8f0; font-size: 14px;">
+                            <input type="radio" name="dip-view" value="none" checked style="margin-right: 10px; accent-color: #0ea5e9;"> Normal Video
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer; color: #e2e8f0; font-size: 14px;">
+                            <input type="radio" name="dip-view" value="grayscale" style="margin-right: 10px; accent-color: #0ea5e9;"> Grayscale & Blur
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer; color: #e2e8f0; font-size: 14px;">
+                            <input type="radio" name="dip-view" value="edges" style="margin-right: 10px; accent-color: #0ea5e9;"> Canny Edges
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer; color: #e2e8f0; font-size: 14px;">
+                            <input type="radio" name="dip-view" value="mask" style="margin-right: 10px; accent-color: #0ea5e9;"> ROI Mask
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer; color: #e2e8f0; font-size: 14px;">
+                            <input type="radio" name="dip-view" value="maskedEdges" style="margin-right: 10px; accent-color: #0ea5e9;"> Masked Edges
+                        </label>
+                    </div>
                 </div>
             </section>
 

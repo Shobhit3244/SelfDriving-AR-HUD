@@ -31,6 +31,10 @@ let lastFpsTime = performance.now();
 let trafficState = 'IDLE';
 let lastGoFlashTime = 0;
 let stopDebounceTime = 0;
+let missedLaneFrames = 0;
+let currentVP = null;
+let currentDebugView = 'none';
+let dipViewCanvas = document.createElement('canvas');
 
 // Targets to detect
 const TARGET_CLASSES = ['car', 'person', 'bicycle', 'motorcycle', 'truck', 'bus', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'bear', 'zebra', 'giraffe', 'stop sign', 'traffic light'];
@@ -55,6 +59,12 @@ async function init() {
         
         startBtn.addEventListener('click', toggleCamera);
         shareBtn.addEventListener('click', toggleScreenShare);
+        
+        document.querySelectorAll('input[name="dip-view"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                currentDebugView = e.target.value;
+            });
+        });
     } catch (error) {
         console.error("Error loading model:", error);
         loadingText.textContent = "Error Loading Perception Model.";
@@ -223,35 +233,48 @@ function drawLoop() {
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
+        if (currentDebugView !== 'none' && dipViewCanvas.width > 0) {
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(dipViewCanvas, 0, 0, canvas.width, canvas.height);
+        }
+        
         if (!toggleObjects || toggleObjects.checked) {
             renderPredictions(currentPredictions);
         }
         
         if (!toggleLanes || toggleLanes.checked) {
             // Draw DIP Lane Polygon
-            if (currentLanePolygon && currentLanePolygon.length === 4) {
-            ctx.fillStyle = 'rgba(16, 185, 129, 0.2)'; // Translucent emerald
-            ctx.beginPath();
-            ctx.moveTo(currentLanePolygon[0].x, currentLanePolygon[0].y);
-            for (let i = 1; i < currentLanePolygon.length; i++) {
-                ctx.lineTo(currentLanePolygon[i].x, currentLanePolygon[i].y);
+            if (currentLanePolygon && (currentLanePolygon.length === 4 || currentLanePolygon.length === 6 || currentLanePolygon.length === 8)) {
+                ctx.fillStyle = 'rgba(16, 185, 129, 0.2)'; // Translucent emerald
+                ctx.beginPath();
+                ctx.moveTo(currentLanePolygon[0].x, currentLanePolygon[0].y);
+                for (let i = 1; i < currentLanePolygon.length; i++) {
+                    ctx.lineTo(currentLanePolygon[i].x, currentLanePolygon[i].y);
+                }
+                ctx.closePath();
+                ctx.fill();
+                
+                // Draw lane boundary lines
+                ctx.strokeStyle = 'rgba(16, 185, 129, 0.8)';
+                ctx.lineWidth = 3;
+                
+                let midPoint = currentLanePolygon.length / 2;
+                
+                ctx.beginPath();
+                ctx.moveTo(currentLanePolygon[0].x, currentLanePolygon[0].y);
+                for (let i = 1; i < midPoint; i++) {
+                    ctx.lineTo(currentLanePolygon[i].x, currentLanePolygon[i].y);
+                }
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(currentLanePolygon[midPoint].x, currentLanePolygon[midPoint].y);
+                for (let i = midPoint + 1; i < currentLanePolygon.length; i++) {
+                    ctx.lineTo(currentLanePolygon[i].x, currentLanePolygon[i].y);
+                }
+                ctx.stroke();
             }
-            ctx.closePath();
-            ctx.fill();
-            
-            // Draw lane boundary lines
-            ctx.strokeStyle = 'rgba(16, 185, 129, 0.8)';
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(currentLanePolygon[0].x, currentLanePolygon[0].y);
-            ctx.lineTo(currentLanePolygon[1].x, currentLanePolygon[1].y);
-            ctx.stroke();
-            
-            ctx.beginPath();
-            ctx.moveTo(currentLanePolygon[2].x, currentLanePolygon[2].y);
-            ctx.lineTo(currentLanePolygon[3].x, currentLanePolygon[3].y);
-            ctx.stroke();
-        }
         
         // Draw No-Go Zones (Non-drivable areas outside the main lane)
         if (currentNoGoZones && currentNoGoZones.length > 0) {
@@ -530,14 +553,17 @@ function processDIP() {
         cv.cvtColor(srcMat, dstMat, cv.COLOR_RGBA2GRAY);
         let ksize = new cv.Size(5, 5);
         cv.GaussianBlur(dstMat, dstMat, ksize, 0, 0, cv.BORDER_DEFAULT);
-        cv.Canny(dstMat, edgesMat, 50, 150, 3);
+        cv.Canny(dstMat, edgesMat, 30, 100, 3);
         
         let mask = cv.Mat.zeros(edgesMat.rows, edgesMat.cols, cv.CV_8UC1);
+        let horizonY = currentVP ? currentVP.y : procHeight * 0.45;
+        horizonY = Math.max(procHeight * 0.2, Math.min(horizonY, procHeight * 0.8));
+        
         let pts = new cv.Mat(4, 1, cv.CV_32SC2);
         pts.data32S.set([
             0, procHeight,
-            Math.floor(procWidth * 0.3), Math.floor(procHeight * 0.5),
-            Math.floor(procWidth * 0.7), Math.floor(procHeight * 0.5),
+            0, Math.floor(horizonY),
+            procWidth, Math.floor(horizonY),
             procWidth, procHeight
         ]);
         let ptsVec = new cv.MatVector();
@@ -547,12 +573,24 @@ function processDIP() {
         let maskedEdges = new cv.Mat();
         cv.bitwise_and(edgesMat, mask, maskedEdges);
         
-        cv.HoughLinesP(maskedEdges, linesMat, 1, Math.PI / 180, 50, 50, 10);
+        cv.HoughLinesP(maskedEdges, linesMat, 1, Math.PI / 180, 15, 15, 20);
+        
+        if (currentDebugView === 'grayscale') cv.imshow(dipViewCanvas, dstMat);
+        else if (currentDebugView === 'edges') cv.imshow(dipViewCanvas, edgesMat);
+        else if (currentDebugView === 'mask') cv.imshow(dipViewCanvas, mask);
+        else if (currentDebugView === 'maskedEdges') cv.imshow(dipViewCanvas, maskedEdges);
         
         mask.delete(); pts.delete(); ptsVec.delete(); maskedEdges.delete();
         
-        let leftLines = [];
-        let rightLines = [];
+        let yBottom = procHeight;
+        let vpY = currentVP ? currentVP.y : procHeight * 0.45;
+        let yTop = vpY + (procHeight * 0.05);
+        
+        let yMidTop = yBottom - (yBottom - yTop) * 0.5;
+
+        let leftLinesAll = [], rightLinesAll = [];
+        let leftLinesNear = [], leftLinesFar = [];
+        let rightLinesNear = [], rightLinesFar = [];
         
         for (let i = 0; i < linesMat.rows; ++i) {
             let x1 = linesMat.data32S[i * 4];
@@ -564,14 +602,18 @@ function processDIP() {
             if (dX === 0) continue; // Ignore vertical lines
             
             let slope = (y2 - y1) / dX;
-            // Filter extreme horizontal or vertical slopes
-            if (Math.abs(slope) < 0.2 || Math.abs(slope) > 10) continue;
+            if (Math.abs(slope) < 0.1 || Math.abs(slope) > 30) continue;
             
-            // Left lane usually has negative slope, right lane has positive slope
-            if (slope < -0.2 && x1 < procWidth * 0.7 && x2 < procWidth * 0.7) {
-                leftLines.push([x1, y1, x2, y2]);
-            } else if (slope > 0.2 && x1 > procWidth * 0.3 && x2 > procWidth * 0.3) {
-                rightLines.push([x1, y1, x2, y2]);
+            let midY = (y1 + y2) / 2;
+            
+            if (slope < -0.1 && x1 < procWidth * 0.9 && x2 < procWidth * 0.9) {
+                leftLinesAll.push([x1, y1, x2, y2]);
+                if (midY > yMidTop) leftLinesNear.push([x1, y1, x2, y2]);
+                else leftLinesFar.push([x1, y1, x2, y2]);
+            } else if (slope > 0.1 && x1 > procWidth * 0.1 && x2 > procWidth * 0.1) {
+                rightLinesAll.push([x1, y1, x2, y2]);
+                if (midY > yMidTop) rightLinesNear.push([x1, y1, x2, y2]);
+                else rightLinesFar.push([x1, y1, x2, y2]);
             }
         }
 
@@ -582,59 +624,107 @@ function processDIP() {
                 sumX += line[0] + line[2];
                 sumY += line[1] + line[3];
                 let lineDx = line[2] - line[0];
-                if (lineDx === 0) lineDx = 0.001; // Avoid divide by zero
+                if (lineDx === 0) lineDx = 0.001; 
                 sumSlope += (line[3] - line[1]) / lineDx;
             }
             let avgX = sumX / (lines.length * 2);
             let avgY = sumY / (lines.length * 2);
             let avgSlope = sumSlope / lines.length;
-            if (Math.abs(avgSlope) < 0.001) avgSlope = avgSlope < 0 ? -0.001 : 0.001; // Avoid divide by zero later
+            if (Math.abs(avgSlope) < 0.001) avgSlope = avgSlope < 0 ? -0.001 : 0.001; 
             return { slope: avgSlope, b: avgY - avgSlope * avgX };
         }
 
-        let leftLane = averageLines(leftLines);
-        let rightLane = averageLines(rightLines);
+        let leftLane = averageLines(leftLinesAll);
+        let rightLane = averageLines(rightLinesAll);
+        
+        let leftNear = averageLines(leftLinesNear);
+        let leftFar = averageLines(leftLinesFar);
+        
+        let rightNear = averageLines(rightLinesNear);
+        let rightFar = averageLines(rightLinesFar);
+        
+        if (!leftNear) leftNear = leftFar || leftLane;
+        if (!leftFar) leftFar = leftNear || leftLane;
+        
+        if (!rightNear) rightNear = rightFar || rightLane;
+        if (!rightFar) rightFar = rightNear || rightLane;
         
         if (leftLane && rightLane) {
-            let yBottom = procHeight;
-            let yTop = procHeight * 0.55; // Horizon estimate
+            let intersectX = (rightLane.b - leftLane.b) / (leftLane.slope - rightLane.slope);
+            let intersectY = leftLane.slope * intersectX + leftLane.b;
             
-            let xLb = (yBottom - leftLane.b) / leftLane.slope;
-            let xLt = (yTop - leftLane.b) / leftLane.slope;
+            if (intersectX > -procWidth && intersectX < procWidth * 2 && intersectY > 0 && intersectY < procHeight * 0.9) {
+                if (!currentVP) {
+                    currentVP = {x: intersectX, y: intersectY};
+                } else {
+                    currentVP.x = currentVP.x * 0.9 + intersectX * 0.1;
+                    currentVP.y = currentVP.y * 0.9 + intersectY * 0.1;
+                }
+            }
             
-            let xRb = (yBottom - rightLane.b) / rightLane.slope;
-            let xRt = (yTop - rightLane.b) / rightLane.slope;
+            // Calculate X intersections for left lane bounds
+            let xL_bottom = (yBottom - leftNear.b) / leftNear.slope;
+            let xL_midTop = (yMidTop - leftNear.b) / leftNear.slope;
+            let xL_top = (yTop - leftFar.b) / leftFar.slope;
             
-            // Anti-crossover protection
-            if (xLt < xRt && xLb < xRb) {
-                currentLanePolygon = [
-                    {x: xLb * scaleX, y: yBottom * scaleY},
-                    {x: xLt * scaleX, y: yTop * scaleY},
-                    {x: xRt * scaleX, y: yTop * scaleY},
-                    {x: xRb * scaleX, y: yBottom * scaleY}
+            // Calculate X intersections for right lane bounds
+            let xR_bottom = (yBottom - rightNear.b) / rightNear.slope;
+            let xR_midTop = (yMidTop - rightNear.b) / rightNear.slope;
+            let xR_top = (yTop - rightFar.b) / rightFar.slope;
+            
+            // Strict Anti-crossover logic (lanes must never overlap or touch)
+            const minWidth = procWidth * 0.05; // 5% minimum logical width
+            
+            if ((xL_bottom + minWidth < xR_bottom) && 
+                (xL_midTop + minWidth < xR_midTop) && 
+                (xL_top + minWidth < xR_top)) {
+                
+                let newPolygon = [
+                    {x: xL_bottom * scaleX, y: yBottom * scaleY},
+                    {x: xL_midTop * scaleX, y: yMidTop * scaleY},
+                    {x: xL_top * scaleX, y: yTop * scaleY},
+                    {x: xR_top * scaleX, y: yTop * scaleY},
+                    {x: xR_midTop * scaleX, y: yMidTop * scaleY},
+                    {x: xR_bottom * scaleX, y: yBottom * scaleY}
                 ];
+                
+                if (currentLanePolygon && currentLanePolygon.length === 6 && missedLaneFrames === 0) {
+                    for (let i = 0; i < 6; i++) {
+                        currentLanePolygon[i].x = currentLanePolygon[i].x * 0.7 + newPolygon[i].x * 0.3;
+                        currentLanePolygon[i].y = currentLanePolygon[i].y * 0.7 + newPolygon[i].y * 0.3;
+                    }
+                } else {
+                    currentLanePolygon = newPolygon;
+                }
                 
                 // Dynamically assign areas outside the lane as No-Go Zones
                 currentNoGoZones = [
                     [ // Left No-Go Zone
-                        {x: 0, y: yBottom * scaleY},
-                        {x: 0, y: yTop * scaleY},
-                        {x: xLt * scaleX, y: yTop * scaleY},
-                        {x: xLb * scaleX, y: yBottom * scaleY}
+                        {x: 0, y: currentLanePolygon[0].y},
+                        {x: 0, y: currentLanePolygon[2].y},
+                        {x: currentLanePolygon[2].x, y: currentLanePolygon[2].y},
+                        {x: currentLanePolygon[1].x, y: currentLanePolygon[1].y},
+                        {x: currentLanePolygon[0].x, y: currentLanePolygon[0].y}
                     ],
                     [ // Right No-Go Zone
-                        {x: xRb * scaleX, y: yBottom * scaleY},
-                        {x: xRt * scaleX, y: yTop * scaleY},
-                        {x: procWidth * scaleX, y: yTop * scaleY},
-                        {x: procWidth * scaleX, y: yBottom * scaleY}
+                        {x: currentLanePolygon[5].x, y: currentLanePolygon[5].y},
+                        {x: currentLanePolygon[4].x, y: currentLanePolygon[4].y},
+                        {x: currentLanePolygon[3].x, y: currentLanePolygon[3].y},
+                        {x: procWidth * scaleX, y: currentLanePolygon[3].y},
+                        {x: procWidth * scaleX, y: currentLanePolygon[5].y}
                     ]
                 ];
+                missedLaneFrames = 0;
             } else {
-                // User requested lanes to be visible at all times.
-                // Do not clear the polygons; persist the previous valid frame's lanes.
+                missedLaneFrames++;
             }
         } else {
-            // Persist the previous valid frame's lanes.
+            missedLaneFrames++;
+        }
+
+        if (missedLaneFrames > 15) {
+            currentLanePolygon = null;
+            currentNoGoZones = [];
         }
     } catch (e) {
         console.error("OpenCV processing error:", e);
